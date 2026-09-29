@@ -36,6 +36,7 @@ git diff --quiet HEAD -- app/service.py deploy/nginx.conf || {
 
 target=$(python3 - "$manifest" <<'PY'
 import json
+import contextlib
 import re
 import sys
 
@@ -49,7 +50,8 @@ if not re.fullmatch(r"i-[0-9a-f]+", instance_id):
     raise SystemExit("STOP: resource manifest has no valid instance_id")
 if resources.get("group") != "aabbcc" or resources.get("owner") != "W3_Lab":
     raise SystemExit("STOP: resource manifest group/owner does not match this deployment")
-context = lab.verify()
+with contextlib.redirect_stdout(sys.stderr):
+    context = lab.verify()
 instances = lab.run_aws([
     "ec2", "describe-instances", "--instance-ids", instance_id,
     "--query", "Reservations[].Instances[].{Id:InstanceId,State:State.Name,Ip:PublicIpAddress,Tags:Tags}",
