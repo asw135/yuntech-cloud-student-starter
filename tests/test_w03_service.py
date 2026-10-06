@@ -69,6 +69,7 @@ class ServiceContract(unittest.TestCase):
                     self.assertEqual(result["service"], "inspection")
                     self.assertEqual(result["status"], "ok")
                     self.assertFalse(result["auth_configured"])
+                    self.assertFalse(result["db_configured"])
                     self.assertTrue(result["started_at"].endswith("Z"))
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(base + "/unknown")

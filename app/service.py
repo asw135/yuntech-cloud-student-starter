@@ -3,12 +3,143 @@
 from datetime import datetime, timezone
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import import_module
 import json
 import os
 from pathlib import Path
 import re
 import threading
 from urllib.parse import unquote, urlsplit
+
+
+DB_CA_FILE = "/etc/inspection/rds-ca.pem"
+EVENT_COLUMNS = 'event_id, device_id, observed_at, "type", note, received_at'
+
+
+class DatabaseUnavailable(Exception):
+    pass
+
+
+def database_configured():
+    required = ("DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD")
+    return all(os.environ.get(name) for name in required) and Path(DB_CA_FILE).is_file()
+
+
+def _event_from_row(row):
+    event = {
+        "event_id": row[0],
+        "device_id": row[1],
+        "observed_at": row[2],
+        "type": row[3],
+        "received_at": row[5].astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    if row[4] is not None:
+        event["note"] = row[4]
+    return event
+
+
+def _database_operation(operation):
+    try:
+        psycopg2 = import_module("psycopg2")
+    except ImportError:
+        raise DatabaseUnavailable from None
+
+    connection = None
+    try:
+        connection = psycopg2.connect(
+            host=os.environ["DB_HOST"],
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            sslmode="verify-full",
+            sslrootcert=DB_CA_FILE,
+            connect_timeout=5,
+        )
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS events (
+                        event_id VARCHAR(64) PRIMARY KEY,
+                        device_id VARCHAR(32) NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        "type" VARCHAR(16) NOT NULL,
+                        note TEXT,
+                        received_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                return operation(cursor)
+    except psycopg2.Error:
+        raise DatabaseUnavailable from None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _database_list_events():
+    def query(cursor):
+        cursor.execute(
+            f"SELECT {EVENT_COLUMNS} FROM events ORDER BY received_at DESC, event_id DESC LIMIT %s",
+            (50,),
+        )
+        return [_event_from_row(row) for row in cursor.fetchall()]
+
+    return _database_operation(query)
+
+
+def _database_get_event(event_id):
+    def query(cursor):
+        cursor.execute(
+            f"SELECT {EVENT_COLUMNS} FROM events WHERE event_id = %s",
+            (event_id,),
+        )
+        row = cursor.fetchone()
+        return _event_from_row(row) if row is not None else None
+
+    return _database_operation(query)
+
+
+def _database_store_event(event):
+    def query(cursor):
+        received_at = datetime.now(timezone.utc)
+        values = (
+            event["event_id"],
+            event["device_id"],
+            event["observed_at"],
+            event["type"],
+            event.get("note"),
+            received_at,
+        )
+        cursor.execute(
+            """
+            INSERT INTO events (event_id, device_id, observed_at, "type", note, received_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (event_id) DO NOTHING
+            RETURNING event_id
+            """,
+            values,
+        )
+        if cursor.fetchone() is not None:
+            return 201, {**event, "received_at": received_at.isoformat(timespec="seconds").replace("+00:00", "Z")}
+
+        cursor.execute(
+            f"SELECT {EVENT_COLUMNS} FROM events WHERE event_id = %s",
+            (event["event_id"],),
+        )
+        existing = cursor.fetchone()
+        if existing is None:
+            raise DatabaseUnavailable
+        stored = _event_from_row(existing)
+        same_content = all(
+            stored.get(field) == event.get(field)
+            for field in ("event_id", "device_id", "observed_at", "type", "note")
+        )
+        if same_content:
+            return 200, stored
+        return 409, {"error": "duplicate_event", "field": "event_id"}
+
+    return _database_operation(query)
 
 
 def make_server(version_file, port=8080):
@@ -19,6 +150,7 @@ def make_server(version_file, port=8080):
     reporter_token = os.environ.get("REPORTER_TOKEN", "")
     operator_token = os.environ.get("OPERATOR_TOKEN", "")
     auth_configured = bool(reporter_token and operator_token and reporter_token != operator_token)
+    db_configured = database_configured()
     events = {}
     events_lock = threading.Lock()
     event_id_pattern = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
@@ -95,7 +227,8 @@ document.querySelector('#load').addEventListener('click', async () => {
             path = urlsplit(self.path).path
             if path == "/health":
                 self.send_json(200, {"status": "ok", "service": "inspection", "version": version,
-                                     "started_at": started, "auth_configured": auth_configured})
+                                     "started_at": started, "auth_configured": auth_configured,
+                                     "db_configured": db_configured})
                 return
             if path == "/":
                 self.send_response(200)
@@ -114,8 +247,15 @@ document.querySelector('#load').addEventListener('click', async () => {
                 if role != "operator":
                     self.send_json(403, {"error": "forbidden", "field": "role"})
                     return
-                with events_lock:
-                    latest = list(events.values())[-50:][::-1]
+                if db_configured:
+                    try:
+                        latest = _database_list_events()
+                    except DatabaseUnavailable:
+                        self.send_json(503, {"error": "database_unavailable", "field": "database"})
+                        return
+                else:
+                    with events_lock:
+                        latest = list(events.values())[-50:][::-1]
                 self.send_json(200, {"events": latest})
                 return
             if path.startswith("/events/") and path.count("/") == 2:
@@ -126,8 +266,15 @@ document.querySelector('#load').addEventListener('click', async () => {
                     self.send_json(403, {"error": "forbidden", "field": "role"})
                     return
                 event_id = unquote(path.removeprefix("/events/"))
-                with events_lock:
-                    event = events.get(event_id)
+                if db_configured:
+                    try:
+                        event = _database_get_event(event_id)
+                    except DatabaseUnavailable:
+                        self.send_json(503, {"error": "database_unavailable", "field": "database"})
+                        return
+                else:
+                    with events_lock:
+                        event = events.get(event_id)
                 if event is None:
                     self.send_json(404, {"error": "not_found", "field": "event_id"})
                     return
@@ -164,14 +311,22 @@ document.querySelector('#load').addEventListener('click', async () => {
             if field is not None:
                 self.send_json(400, {"error": "invalid_event", "field": field})
                 return
-            with events_lock:
-                if event["event_id"] in events:
-                    self.send_json(409, {"error": "duplicate_event", "field": "event_id"})
+            if db_configured:
+                try:
+                    result_status, stored = _database_store_event(event)
+                except DatabaseUnavailable:
+                    self.send_json(503, {"error": "database_unavailable", "field": "database"})
                     return
-                stored = dict(event)
-                stored["received_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-                events[stored["event_id"]] = stored
-            self.send_json(201, stored)
+            else:
+                with events_lock:
+                    if event["event_id"] in events:
+                        self.send_json(409, {"error": "duplicate_event", "field": "event_id"})
+                        return
+                    stored = dict(event)
+                    stored["received_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+                    events[stored["event_id"]] = stored
+                result_status = 201
+            self.send_json(result_status, stored)
 
         def authorized_role(self):
             if not auth_configured:

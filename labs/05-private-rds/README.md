@@ -77,7 +77,9 @@ timeout 8 bash -c 'echo > /dev/tcp/<你的 RDS 位址>/5432' && echo "連得到�
 4. 密碼由腳本產生、寫進 `.local/db.env`（600），不顯示，也不能出現在命令列參數。
 5. 每建一項就把 ID 寫進 `.local/resources.json`；結束時讀回 `available` 與 `PubliclyAccessible=false`。
 
-`deploy.sh` 本週多一件事：把 `.local/db.env` 的內容一起放進主機的秘密檔，放完再重啟服務。
+`deploy.sh` 本週多一件事：把 `.local/db.env` 的內容放到主機的 `/etc/inspection/db.env`（root、600），放完再重啟服務。服務會用 `sslmode=verify-full` 及 `/etc/inspection/rds-ca.pem` 連線；DB 設定未就緒時 `/health` 仍會回 200 並回報 `db_configured=false`。
+
+執行 `bash deploy/db-up.sh --plan` 可先做唯讀盤點並顯示候選資源，不會建立資源。建立前請審查 VPC、CIDR、AZ、路由、安全組及費用；正式執行會再次印出計畫，必須在互動終端輸入指定確認字串才會建立。AWS 建立完成後，資源 ID 會逐項記錄；若中途失敗，不要盲目重跑，先依 `.local/resources.json` 核對已建立資源。停止 RDS 仍會收儲存費，且最多 7 天會自動重新啟動；預算提醒不是費用上限。
 
 ## 冪等規則
 
@@ -95,6 +97,8 @@ timeout 8 bash -c 'echo > /dev/tcp/<你的 RDS 位址>/5432' && echo "連得到�
 ### 冪等矩陣（T3，請 Copilot 寫成一支小腳本一次跑完）
 
 腳本的輸出要能直接貼進繳交範本：開頭印出主機 `/health` 的 `version` 和 `db_configured`；每一列印出編號、HTTP 狀態碼、服務回應的本文；第 5 列印出 EC2 上 `psql` 查到的筆數。不要印出權杖、密碼或請求標頭。
+
+本範本矩陣腳本為 `tests/w05_idempotency_matrix.py`，在 VS Code 終端執行 `python3 tests/w05_idempotency_matrix.py`。它會從 `.local/resources.json` 定位本組主機，並以隱藏提示讀取 reporter/operator 權杖；SSH passphrase 若有設定，請只在 VS Code 終端提示中輸入。腳本不會輸出權杖或密碼。
 
 | # | 做什麼 | 預期 |
 |---|---|---|

@@ -47,6 +47,7 @@ After=network.target
 Type=simple
 User=inspection
 EnvironmentFile=-/etc/inspection/app.env
+EnvironmentFile=-/etc/inspection/db.env
 Environment=HOME=/opt/inspection
 WorkingDirectory=/opt/inspection/app
 ExecStart=/usr/bin/python3 /opt/inspection/app/service.py

@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 
 manifest=.local/resources.json
 secret_file=.local/app.env
+db_secret_file=.local/db.env
 
 [[ -f "$manifest" && ! -L "$manifest" ]] || { echo "STOP: missing regular .local/resources.json" >&2; exit 1; }
 key_name=$(python3 - "$manifest" <<'PY'
@@ -21,6 +22,8 @@ case "$key_name" in
 esac
 [[ -f "$secret_file" && ! -L "$secret_file" ]] || { echo "STOP: missing regular .local/app.env" >&2; exit 1; }
 [[ "$(stat -c '%a' "$secret_file")" == 600 ]] || { echo "STOP: .local/app.env must have mode 600" >&2; exit 1; }
+[[ -f "$db_secret_file" && ! -L "$db_secret_file" ]] || { echo "STOP: missing regular .local/db.env" >&2; exit 1; }
+[[ "$(stat -c '%a' "$db_secret_file")" == 600 ]] || { echo "STOP: .local/db.env must have mode 600" >&2; exit 1; }
 [[ -f "$key_file" && ! -L "$key_file" && "$(stat -c '%a' "$key_file")" == 600 ]] || {
     echo "STOP: SSH private key for $key_name is missing or does not have mode 600" >&2
     exit 1
@@ -29,8 +32,8 @@ esac
 bash scripts/verify-aws.sh
 commit=$(git rev-parse --verify HEAD)
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "STOP: HEAD is not a commit" >&2; exit 1; }
-git diff --quiet HEAD -- app/service.py deploy/nginx.conf || {
-    echo "STOP: commit app/service.py and deploy/nginx.conf before deployment" >&2
+git diff --quiet HEAD -- app/service.py deploy/nginx.conf deploy/make_user_data.py || {
+    echo "STOP: commit app/service.py, deploy/nginx.conf and deploy/make_user_data.py before deployment" >&2
     exit 1
 }
 
@@ -83,7 +86,10 @@ ssh "${ssh_options[@]}" "ec2-user@$public_ip" 'sudo bash -s' < "$bundle"
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" \
     'sudo install -d -o root -g root -m 700 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/app.env' \
     < "$secret_file"
+ssh "${ssh_options[@]}" "ec2-user@$public_ip" \
+    'sudo install -d -o root -g root -m 700 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/db.env' \
+    < "$db_secret_file"
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" 'sudo systemctl restart inspection'
 
 health=$(curl --fail --silent --show-error --max-time 10 "http://$public_ip/health")
-printf '%s' "$health" | python3 -c 'import json,sys; expected=sys.argv[1]; data=json.load(sys.stdin); assert data.get("version")==expected, "deployed version mismatch"; assert data.get("auth_configured") is True, "service auth is not configured"; print(json.dumps(data, ensure_ascii=False, sort_keys=True))' "$commit"
+printf '%s' "$health" | python3 -c 'import json,sys; expected=sys.argv[1]; data=json.load(sys.stdin); assert data.get("version")==expected, "deployed version mismatch"; assert data.get("auth_configured") is True, "service auth is not configured"; assert data.get("db_configured") is True, "service DB config is not configured"; print(json.dumps(data, ensure_ascii=False, sort_keys=True))' "$commit"
