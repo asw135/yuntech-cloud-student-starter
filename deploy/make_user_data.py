@@ -31,6 +31,7 @@ def build(commit):
 set -euo pipefail
 dnf install -y nginx python3 python3-psycopg2 postgresql15
 install -d -m 755 /etc/inspection
+chmod 755 /etc/inspection
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /etc/inspection/rds-ca.pem
 chmod 644 /etc/inspection/rds-ca.pem
 id inspection >/dev/null 2>&1 || useradd --system --no-create-home --shell /sbin/nologin inspection

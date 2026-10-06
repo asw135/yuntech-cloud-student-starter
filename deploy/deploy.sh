@@ -84,10 +84,10 @@ bash deploy/make-user-data.sh "$commit" "$bundle"
 ssh_options=(-i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" 'sudo bash -s' < "$bundle"
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" \
-    'sudo install -d -o root -g root -m 700 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/app.env' \
+    'sudo install -d -o root -g root -m 755 /etc/inspection && sudo chmod 755 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/app.env' \
     < "$secret_file"
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" \
-    'sudo install -d -o root -g root -m 700 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/db.env' \
+    'sudo install -d -o root -g root -m 755 /etc/inspection && sudo chmod 755 /etc/inspection && sudo install -o root -g root -m 600 /dev/stdin /etc/inspection/db.env' \
     < "$db_secret_file"
 ssh "${ssh_options[@]}" "ec2-user@$public_ip" 'sudo systemctl restart inspection'
 
