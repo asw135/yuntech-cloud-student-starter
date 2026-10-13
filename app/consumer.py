@@ -21,6 +21,10 @@ def _valid_event_id(value):
     return isinstance(value, str) and EVENT_ID_RE.fullmatch(value) is not None
 
 
+def _mqtt_reason_code(reason):
+    return int(getattr(reason, "value", reason))
+
+
 def _post_event(event, reporter_token):
     request = Request(
         "http://127.0.0.1:8080/events",
@@ -108,12 +112,12 @@ def main():
     )
 
     def on_connect(current_client, _userdata, _flags, reason_code, _properties):
-        if int(reason_code) == 0:
+        if _mqtt_reason_code(reason_code) == 0:
             current_client.subscribe(config["IOT_TOPIC"], qos=1)
 
     def on_subscribe(_current_client, _userdata, _mid, reason_code_list, _properties):
         reason = reason_code_list[0] if reason_code_list else 128
-        print(f"subscribed rc={int(reason)}", flush=True)
+        print(f"subscribed rc={_mqtt_reason_code(reason)}", flush=True)
 
     def on_message(_current_client, _userdata, message):
         event_id, result = process_payload(

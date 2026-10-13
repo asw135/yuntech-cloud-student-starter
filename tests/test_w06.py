@@ -15,6 +15,7 @@ import consumer
 import gateway_sim
 import iot_up
 import w06_reconcile
+import paho.mqtt.client as mqtt
 
 
 class ConsumerContract(unittest.TestCase):
@@ -26,6 +27,11 @@ class ConsumerContract(unittest.TestCase):
             "observed_at": "2026-10-13T00:00:00Z",
             "type": "status",
         }
+
+    def test_mqtt_v5_reason_code_objects_are_supported(self):
+        success = mqtt.ReasonCode(mqtt.MQTTv5, "Success")
+        self.assertEqual(consumer._mqtt_reason_code(success), 0)
+        self.assertEqual(consumer._mqtt_reason_code(135), 135)
 
     def test_allowlisted_devices_are_forwarded_and_classified(self):
         for status, expected in ((201, "created"), (200, "duplicate"), (409, "rejected"), (503, "error"), (None, "error")):
