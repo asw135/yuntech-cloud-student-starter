@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import threading
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 DB_CA_FILE = "/etc/inspection/rds-ca.pem"
@@ -77,12 +77,19 @@ def _database_operation(operation):
             connection.close()
 
 
-def _database_list_events():
+def _database_list_events(device_id=None):
     def query(cursor):
-        cursor.execute(
-            f"SELECT {EVENT_COLUMNS} FROM events ORDER BY received_at DESC, event_id DESC LIMIT %s",
-            (50,),
-        )
+        if device_id is None:
+            cursor.execute(
+                f"SELECT {EVENT_COLUMNS} FROM events ORDER BY received_at DESC, event_id DESC LIMIT %s",
+                (50,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT {EVENT_COLUMNS} FROM events WHERE device_id = %s "
+                "ORDER BY received_at DESC, event_id DESC LIMIT %s",
+                (device_id, 50),
+            )
         return [_event_from_row(row) for row in cursor.fetchall()]
 
     return _database_operation(query)
@@ -193,17 +200,23 @@ def make_server(version_file, port=8080):
 <html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Inspection events</title>
 <main><h1>巡檢事件</h1><label>Operator 權杖 <input id="token" type="password" autocomplete="off"></label>
+<label>設備編號 <input id="device-id" type="text" autocomplete="off"></label>
 <button id="load" type="button">載入事件</button><p id="status" role="status"></p><ol id="events"></ol></main>
 <script>
 const tokenInput = document.querySelector('#token');
+const deviceInput = document.querySelector('#device-id');
 const statusOutput = document.querySelector('#status');
 const eventList = document.querySelector('#events');
 document.querySelector('#load').addEventListener('click', async () => {
   const token = tokenInput.value;
+  const deviceId = deviceInput.value.trim();
   tokenInput.value = '';
   eventList.replaceChildren();
   try {
-    const response = await fetch('/events', {headers: {Authorization: `Bearer ${token}`}});
+    const query = new URLSearchParams();
+    if (deviceId) query.set('device_id', deviceId);
+    const suffix = query.size ? `?${query.toString()}` : '';
+    const response = await fetch(`/events${suffix}`, {headers: {Authorization: `Bearer ${token}`}});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     statusOutput.textContent = `${result.events.length} 筆事件`;
@@ -247,15 +260,31 @@ document.querySelector('#load').addEventListener('click', async () => {
                 if role != "operator":
                     self.send_json(403, {"error": "forbidden", "field": "role"})
                     return
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(query) - {"device_id"} or any(len(values) != 1 for values in query.values()):
+                    self.send_json(400, {"error": "invalid_query", "field": "query"})
+                    return
+                device_ids = query.get("device_id")
+                device_id = device_ids[0] if device_ids is not None else None
+                if device_id is not None and not device_id_pattern.fullmatch(device_id):
+                    self.send_json(400, {"error": "invalid_query", "field": "device_id"})
+                    return
                 if db_configured:
                     try:
-                        latest = _database_list_events()
+                        latest = _database_list_events(device_id)
                     except DatabaseUnavailable:
                         self.send_json(503, {"error": "database_unavailable", "field": "database"})
                         return
                 else:
                     with events_lock:
-                        latest = list(events.values())[-50:][::-1]
+                        latest = sorted(
+                            (
+                                event for event in events.values()
+                                if device_id is None or event["device_id"] == device_id
+                            ),
+                            key=lambda event: (event["received_at"], event["event_id"]),
+                            reverse=True,
+                        )[:50]
                 self.send_json(200, {"events": latest})
                 return
             if path.startswith("/events/") and path.count("/") == 2:

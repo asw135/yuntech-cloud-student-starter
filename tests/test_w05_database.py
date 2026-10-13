@@ -69,6 +69,11 @@ class FakeCursor:
                 key=lambda row: (row[5], row[0]),
                 reverse=True,
             )
+            if "WHERE device_id = %s" in normalized:
+                rows = [row for row in rows if row[1] == params[0]]
+                rows = rows[: params[1]]
+                self.rows = rows
+                return None
             self.rows = rows[: params[0]]
             return None
         raise AssertionError("Unexpected SQL statement")
@@ -234,6 +239,38 @@ class W05DatabaseContract(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(persisted, created)
+        finally:
+            self.stop_server(server, worker)
+
+    def test_database_event_filter_is_parameterized_and_limited(self):
+        server, worker, base = self.start_server()
+        try:
+            for index, device_id in enumerate(("aabbcc-d01", "aabbcc-d02")):
+                event = {
+                    "event_id": f"aabbcc-W3_Lab-filter-{index:04d}",
+                    "device_id": device_id,
+                    "observed_at": "2026-10-06T03:01:00Z",
+                    "type": "status",
+                }
+                self.assertEqual(
+                    request(base, "/events", "POST", "reporter-secret", event)[0],
+                    201,
+                )
+
+            status, listing = request(
+                base,
+                "/events?device_id=aabbcc-d01",
+                token="operator-secret",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual([item["device_id"] for item in listing["events"]], ["aabbcc-d01"])
+            query, params = next(
+                (query, params)
+                for query, params in self.store.queries
+                if "WHERE device_id = %s" in query
+            )
+            self.assertIn("%s", query)
+            self.assertEqual(params, ("aabbcc-d01", 50))
         finally:
             self.stop_server(server, worker)
 

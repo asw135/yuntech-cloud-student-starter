@@ -144,6 +144,45 @@ class ServiceContract(unittest.TestCase):
             self.assertEqual(status, 404)
             self.assertEqual(missing["field"], "event_id")
 
+    def test_operator_can_filter_events_by_device(self):
+        event = json.loads((FIXTURES / "event-valid.json").read_text(encoding="utf-8"))
+        with running_server() as base:
+            for device_id, suffix in (("aabbcc-d01", "one"), ("aabbcc-d02", "two")):
+                candidate = dict(event, event_id=event["event_id"] + "-" + suffix, device_id=device_id)
+                self.assertEqual(
+                    request(base, "/events", "POST", "reporter-secret", candidate, "application/json")[0],
+                    201,
+                )
+            status, listing = request(base, "/events?device_id=aabbcc-d01", token="operator-secret")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(listing["events"]), 1)
+            self.assertEqual(listing["events"][0]["device_id"], "aabbcc-d01")
+
+            status, rejected = request(base, "/events?device_id=aabbcc-d01%27%20OR%201%3D1", token="operator-secret")
+            self.assertEqual(status, 400)
+            self.assertEqual(rejected["field"], "device_id")
+            status, rejected = request(base, "/events?device_id=aabbcc-d01&device_id=aabbcc-d02", token="operator-secret")
+            self.assertEqual(status, 400)
+            status, rejected = request(base, "/events?device_id=aabbcc-d01", token="reporter-secret")
+            self.assertEqual(status, 403)
+
+    def test_device_filter_returns_at_most_fifty_newest_events(self):
+        base_event = json.loads((FIXTURES / "event-valid.json").read_text(encoding="utf-8"))
+        with running_server() as base:
+            for index in range(52):
+                event = dict(
+                    base_event,
+                    event_id=f"aabbcc-W3_Lab-filter-limit-{index:02d}",
+                    device_id="aabbcc-d01",
+                )
+                status, _ = request(base, "/events", "POST", "reporter-secret", event, "application/json")
+                self.assertEqual(status, 201)
+            status, listing = request(base, "/events?device_id=aabbcc-d01", token="operator-secret")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(listing["events"]), 50)
+            keys = [(item["received_at"], item["event_id"]) for item in listing["events"]]
+            self.assertEqual(keys, sorted(keys, reverse=True))
+
     def test_payload_limits_and_display_page_safety(self):
         with running_server() as base:
             status, rejected = request(base, "/events", "POST", "reporter-secret", {}, "text/plain")
@@ -154,3 +193,5 @@ class ServiceContract(unittest.TestCase):
             self.assertIn("textContent", page)
             self.assertNotIn("innerHTML", page)
             self.assertNotIn("localStorage", page)
+            self.assertIn('id="device-id"', page)
+            self.assertIn("URLSearchParams", page)
