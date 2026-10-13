@@ -75,7 +75,7 @@ sudo journalctl -u inspection-consumer -o cat --no-pager \
   | grep -F -- "event_id=${prefix}-" \
   | grep -o 'result=[a-z]*' \
   | sort | uniq -c || true
-sudo bash -c 'set -a; . /etc/inspection/app.env; set +a
+sudo bash -c 'set -a; . /etc/inspection/app.env; . /etc/inspection/db.env; set +a
   PGPASSWORD="$DB_PASSWORD" psql -At "host=$DB_HOST dbname=$DB_NAME user=$DB_USER sslmode=verify-full sslrootcert=/etc/inspection/rds-ca.pem" \
     -v prefix="$1"' _ "${prefix}-" <<'SQL'
 SELECT count(*) FROM events WHERE left(event_id, length(:'prefix')) = :'prefix';

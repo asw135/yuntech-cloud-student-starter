@@ -129,6 +129,20 @@ class GatewayContract(unittest.TestCase):
 
 
 class ReconcileContract(unittest.TestCase):
+    def test_remote_query_loads_database_secret_file_separately(self):
+        response = type("Response", (), {
+            "returncode": 0,
+            "stdout": "  1 result=created\n30\n",
+        })()
+        with patch.object(w06_reconcile.subprocess, "run", return_value=response) as run:
+            counts, database_count = w06_reconcile._remote_reconcile(
+                ["ssh"], "192.0.2.1", "aabbcc-W3-Lab-r1",
+            )
+        remote_script = run.call_args.kwargs["input"]
+        self.assertIn(". /etc/inspection/app.env; . /etc/inspection/db.env;", remote_script)
+        self.assertEqual(counts["created"], 1)
+        self.assertEqual(database_count, 30)
+
     def test_filter_uses_operator_token_header_and_only_returns_current_prefix(self):
         response = type("Response", (), {
             "returncode": 0,
