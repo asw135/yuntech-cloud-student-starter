@@ -111,7 +111,7 @@ def _filtered_events(public_ip, code, prefix):
 set -a
 . .local/app.env
 set +a
-    printf 'Authorization: %s\n' "$OPERATOR_TOKEN" \
+    printf 'Authorization: Bearer %s\n' "$OPERATOR_TOKEN" \
       | curl --header @- --fail --silent --show-error --max-time 10 "$1"
 """
     response = subprocess.run(

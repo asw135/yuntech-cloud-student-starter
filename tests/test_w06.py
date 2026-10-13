@@ -157,7 +157,7 @@ class ReconcileContract(unittest.TestCase):
             )
         self.assertEqual(event_ids, ["aabbcc-W3-Lab-r1-d01-01"])
         shell_script = run.call_args.args[0][2]
-        self.assertIn("printf 'Authorization: %s\\n' \"$OPERATOR_TOKEN\"", shell_script)
+        self.assertIn("printf 'Authorization: Bearer %s\\n' \"$OPERATOR_TOKEN\"", shell_script)
 
     def test_reconcile_prefix_uses_w6_prefix_contract(self):
         self.assertTrue(w06_reconcile.PREFIX_RE.fullmatch("aabbcc-W3-Lab-r1"))
